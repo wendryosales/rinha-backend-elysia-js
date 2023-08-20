@@ -1,8 +1,13 @@
 import { Elysia, t } from "elysia";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 
 // db
-const client = new MongoClient("mongodb://localhost:27017");
+const client = new MongoClient("mongodb://db:27017", {
+  auth: {
+    username: "root",
+    password: "root",
+  },
+});
 
 await client.connect();
 const db = client.db("elysia");
@@ -32,9 +37,15 @@ const bodySchema = t.Object(
 
 app.post(
   "/pessoas",
-  ({ body, set }) => {
+  async ({ body, set }) => {
+    if (await collection.findOne({ apelido: body.apelido })) {
+      set.status = 422;
+      return { error: "Pessoa já cadastrada" };
+    }
+    const docRef = await collection.insertOne(body);
     set.status = 201;
-    return body;
+    set.headers = { Location: `/pessoas/${docRef.insertedId.toString()}` };
+    return;
   },
   {
     beforeHandle: ({ body, set }) => {
@@ -46,6 +57,74 @@ app.post(
     body: bodySchema,
   },
 );
+
+app.get(
+  "/pessoas",
+  async ({ query }) => {
+    const { t } = query;
+
+    return collection
+      .find({
+        $or: [
+          { nome: { $regex: t, $options: "i" } },
+          { apelido: { $regex: t, $options: "i" } },
+          { stacks: { $regex: t, $options: "i" } },
+        ],
+      })
+      .map((pessoa) => ({
+        id: pessoa._id,
+        nome: pessoa.nome,
+        apelido: pessoa.apelido,
+        nascimento: pessoa.nascimento,
+        stacks: pessoa.stacks,
+      }))
+      .toArray();
+  },
+  {
+    query: t.Object(
+      {
+        t: t.String({ maxLength: 32 }),
+      },
+      {
+        error: "Query inválida",
+      },
+    ),
+  },
+);
+
+app.get(
+  "/pessoas/:id",
+  async ({ params, set }) => {
+    const response = await collection.findOne({ _id: new ObjectId(params.id) });
+    if (!response) {
+      set.status = 404;
+      return { error: "Pessoa não encontrada" };
+    }
+
+    set.status = 200;
+    return {
+      id: response._id,
+      nome: response.nome,
+      apelido: response.apelido,
+      nascimento: response.nascimento,
+      stacks: response.stacks,
+    };
+  },
+  {
+    params: t.Object(
+      {
+        id: t.String({ maxLength: 24 }),
+      },
+      {
+        error: "Params inválidos",
+      },
+    ),
+  },
+);
+
+app.get("contagem-pessoas", async () => {
+  return collection.countDocuments();
+});
 
 app.listen(3000);
 console.log(

@@ -12,6 +12,9 @@
 /.next/
 /out/
 
+# volumes
+/dbdata/
+
 # production
 /build
 
