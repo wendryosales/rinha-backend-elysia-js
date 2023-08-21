@@ -6,8 +6,10 @@
     "dev": "bun run --watch src/index.ts"
   },
   "dependencies": {
+    "bull": "^4.11.3",
     "elysia": "latest",
-    "mongodb": "^5.7.0"
+    "mongodb": "^5.7.0",
+    "redis": "^4.6.7"
   },
   "devDependencies": {
     "bun-types": "latest"

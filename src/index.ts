@@ -1,5 +1,7 @@
 import { Elysia, t } from "elysia";
 import { MongoClient, ObjectId } from "mongodb";
+import { createClient } from "redis";
+import Queue from "bull";
 
 // db
 const client = new MongoClient("mongodb://db:27017", {
@@ -12,6 +14,26 @@ const client = new MongoClient("mongodb://db:27017", {
 await client.connect();
 const db = client.db("elysia");
 const collection = db.collection("pessoas");
+
+collection.createIndex({ apelido: 1 }, { unique: true });
+collection.createIndex({ nome: "text", apelido: "text", stacks: "text" });
+
+// cache
+const redisClient = async () => {
+  const client = createClient({
+    url: "redis://cache:6379",
+  });
+  await client.connect();
+  return client;
+};
+
+// queue
+const queue = new Queue("pessoas", {
+  redis: {
+    host: "cache",
+    port: 6379,
+  },
+});
 
 const app = new Elysia();
 
@@ -38,13 +60,21 @@ const bodySchema = t.Object(
 app.post(
   "/pessoas",
   async ({ body, set }) => {
-    if (await collection.findOne({ apelido: body.apelido })) {
+    const cache = await redisClient();
+    const nickCached = await cache.get(body.apelido as string);
+    if (!!nickCached) {
       set.status = 422;
+      cache.quit();
       return { error: "Pessoa já cadastrada" };
     }
-    const docRef = await collection.insertOne(body);
+    await cache.set(body.apelido as string, "1");
+    const id = new ObjectId();
+    await queue.add("create-person", { id, ...body });
+    // const { insertedId } = await collection.insertOne(body);
     set.status = 201;
-    set.headers = { Location: `/pessoas/${docRef.insertedId.toString()}` };
+    set.headers = { Location: `/pessoas/${id.toString()}` };
+    await cache.set(id.toString(), JSON.stringify(body));
+    cache.quit();
     return;
   },
   {
@@ -58,12 +88,26 @@ app.post(
   },
 );
 
+queue.process("create-person", async (job) => {
+  const { id, ...body } = job.data;
+  return collection.insertOne({
+    _id: id,
+    ...body,
+  });
+});
+
 app.get(
   "/pessoas",
   async ({ query }) => {
     const { t } = query;
+    const cache = await redisClient();
+    const personCached = await cache.get(t as string);
+    if (personCached) {
+      cache.quit();
+      return JSON.parse(personCached);
+    }
 
-    return collection
+    const results = await collection
       .find({
         $or: [
           { nome: { $regex: t, $options: "i" } },
@@ -78,12 +122,17 @@ app.get(
         nascimento: pessoa.nascimento,
         stacks: pessoa.stacks,
       }))
+      .limit(50)
       .toArray();
+
+    await cache.set(t as string, JSON.stringify(results));
+    cache.quit();
+    return results;
   },
   {
     query: t.Object(
       {
-        t: t.String({ maxLength: 32 }),
+        t: t.String(),
       },
       {
         error: "Query inválida",
@@ -95,7 +144,15 @@ app.get(
 app.get(
   "/pessoas/:id",
   async ({ params, set }) => {
+    const cache = await redisClient();
+    const personsWithIdCache = await cache.get(params.id as string);
+    cache.quit();
+    if (personsWithIdCache) {
+      return JSON.parse(personsWithIdCache);
+    }
+
     const response = await collection.findOne({ _id: new ObjectId(params.id) });
+
     if (!response) {
       set.status = 404;
       return { error: "Pessoa não encontrada" };
@@ -113,7 +170,7 @@ app.get(
   {
     params: t.Object(
       {
-        id: t.String({ maxLength: 24 }),
+        id: t.String(),
       },
       {
         error: "Params inválidos",
